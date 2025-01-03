@@ -176,13 +176,13 @@ func newClient(v4 bool, v6 bool, logger *log.Logger) (*client, error) {
 
 	// Establish multicast connections
 	if v4 {
-		mconn4, err = net.ListenMulticastUDP("udp4", nil, ipv4Addr)
+		mconn4, err = net.ListenMulticastUDP("udp4", nil, ipv4McastAddr)
 		if err != nil {
 			logger.Printf("[ERR] mdns: Failed to bind to udp4 port: %v", err)
 		}
 	}
 	if v6 {
-		mconn6, err = net.ListenMulticastUDP("udp6", nil, ipv6Addr)
+		mconn6, err = net.ListenMulticastUDP("udp6", nil, ipv6McastAddr)
 		if err != nil {
 			logger.Printf("[ERR] mdns: Failed to bind to udp6 port: %v", err)
 		}
@@ -309,7 +309,7 @@ func (c *client) query(params *QueryParam) error {
 		m.Question[0].Qclass |= 1 << 15
 	}
 	m.RecursionDesired = false
-	if err := c.sendQuery(m); err != nil {
+	if err := c.sendQuery(m, ipv4McastAddr, ipv6McastAddr); err != nil {
 		return err
 	}
 
@@ -388,7 +388,15 @@ func (c *client) query(params *QueryParam) error {
 				m := new(dns.Msg)
 				m.SetQuestion(inp.Name, dns.TypePTR)
 				m.RecursionDesired = false
-				if err := c.sendQuery(m); err != nil {
+				var ipv4Addr *net.UDPAddr
+				var ipv6Addr *net.UDPAddr
+				switch len(resp.src.IP) {
+				case net.IPv4len:
+					ipv4Addr = resp.src
+				case net.IPv6len:
+					ipv6Addr = resp.src
+				}
+				if err := c.sendQuery(m, ipv4Addr, ipv6Addr); err != nil {
 					c.log.Printf("[ERR] mdns: Failed to query instance %s: %v", inp.Name, err)
 				}
 			}
@@ -399,18 +407,21 @@ func (c *client) query(params *QueryParam) error {
 }
 
 // sendQuery is used to multicast a query out
-func (c *client) sendQuery(q *dns.Msg) error {
+func (c *client) sendQuery(q *dns.Msg, ipv4Addr, ipv6Addr *net.UDPAddr) error {
+	if ipv4Addr == nil && ipv6Addr == nil {
+		return fmt.Errorf("Must provide at least one of IPv4 and IPv6 addresses")
+	}
 	buf, err := q.Pack()
 	if err != nil {
 		return err
 	}
-	if c.ipv4UnicastConn != nil {
+	if c.ipv4UnicastConn != nil && ipv4Addr != nil {
 		_, err = c.ipv4UnicastConn.WriteToUDP(buf, ipv4Addr)
 		if err != nil {
 			return err
 		}
 	}
-	if c.ipv6UnicastConn != nil {
+	if c.ipv6UnicastConn != nil && ipv6Addr != nil {
 		_, err = c.ipv6UnicastConn.WriteToUDP(buf, ipv6Addr)
 		if err != nil {
 			return err
@@ -464,8 +475,47 @@ func ensureName(inprogress map[string]*ServiceEntry, name string) *ServiceEntry 
 	return inp
 }
 
+// mergeEntry takes any non-nil/non-zero values in the `from` entry and copies them to the `into`
+// entry.
+func mergeEntry(into *ServiceEntry, from *ServiceEntry) {
+	if from.Host != "" {
+		into.Host = from.Host
+	}
+	if from.Port != 0 {
+		into.Port = from.Port
+	}
+	if from.Info != "" {
+		into.Info = from.Info
+	}
+	if len(from.InfoFields) > 0 {
+		into.InfoFields = from.InfoFields
+	}
+	if from.hasTXT {
+		into.hasTXT = true
+	}
+	if !from.Addr.IsUnspecified() {
+		into.Addr = from.Addr
+	}
+	if !from.AddrV4.IsUnspecified() {
+		into.AddrV4 = from.AddrV4
+	}
+	if !from.AddrV6.IsUnspecified() {
+		into.AddrV6 = from.AddrV6
+	}
+	if from.AddrV6IPAddr != nil {
+		into.AddrV6IPAddr = from.AddrV6IPAddr
+	}
+}
+
 // alias is used to setup an alias between two entries
 func alias(inprogress map[string]*ServiceEntry, src, dst string) {
 	srcEntry := ensureName(inprogress, src)
+
+	// If `dst` already exists in `inprogress` (e.g. if we got its 'A' record before 'SRV' or other
+	// records), don't overwrite it, but merge whatever we have for dst into src.
+	if dstEntry := inprogress[dst]; dstEntry != nil {
+		mergeEntry(srcEntry, dstEntry)
+	}
+
 	inprogress[dst] = srcEntry
 }

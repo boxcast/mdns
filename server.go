@@ -21,11 +21,11 @@ const (
 )
 
 var (
-	ipv4Addr = &net.UDPAddr{
+	ipv4McastAddr = &net.UDPAddr{
 		IP:   net.ParseIP(ipv4mdns),
 		Port: mdnsPort,
 	}
-	ipv6Addr = &net.UDPAddr{
+	ipv6McastAddr = &net.UDPAddr{
 		IP:   net.ParseIP(ipv6mdns),
 		Port: mdnsPort,
 	}
@@ -64,8 +64,8 @@ type Server struct {
 // NewServer is used to create a new mDNS server from a config
 func NewServer(config *Config) (*Server, error) {
 	// Create the listeners
-	ipv4List, _ := net.ListenMulticastUDP("udp4", config.Iface, ipv4Addr)
-	ipv6List, _ := net.ListenMulticastUDP("udp6", config.Iface, ipv6Addr)
+	ipv4List, _ := net.ListenMulticastUDP("udp4", config.Iface, ipv4McastAddr)
+	ipv6List, _ := net.ListenMulticastUDP("udp6", config.Iface, ipv6McastAddr)
 
 	// Check if we have any listener
 	if ipv4List == nil && ipv6List == nil {

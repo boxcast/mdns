@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -287,14 +288,33 @@ func (c *client) query(params *QueryParam) error {
 
 	// Start listening for response packets
 	msgCh := make(chan *msgAddr, 32)
+	var wg sync.WaitGroup
 	if c.use_ipv4 {
-		go c.recv(c.ipv4UnicastConn, msgCh)
-		go c.recv(c.ipv4MulticastConn, msgCh)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			c.recv(c.ipv4UnicastConn, msgCh)
+		}()
+		go func() {
+			defer wg.Done()
+			c.recv(c.ipv4MulticastConn, msgCh)
+		}()
 	}
 	if c.use_ipv6 {
-		go c.recv(c.ipv6UnicastConn, msgCh)
-		go c.recv(c.ipv6MulticastConn, msgCh)
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			c.recv(c.ipv6UnicastConn, msgCh)
+		}()
+		go func() {
+			defer wg.Done()
+			c.recv(c.ipv6MulticastConn, msgCh)
+		}()
 	}
+	go func() {
+		wg.Wait()
+		close(msgCh)
+	}()
 
 	// Send the query
 	m := new(dns.Msg)
@@ -321,6 +341,9 @@ func (c *client) query(params *QueryParam) error {
 	for {
 		select {
 		case resp := <-msgCh:
+			if resp == nil {
+				return nil
+			}
 			var inp *ServiceEntry
 			for _, answer := range append(resp.msg.Answer, resp.msg.Extra...) {
 				// TODO(reddaly): Check that response corresponds to serviceAddr?
